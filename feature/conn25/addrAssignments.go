@@ -4,6 +4,7 @@
 package conn25
 
 import (
+	"container/heap"
 	"errors"
 	"net/netip"
 	"time"
@@ -29,6 +30,7 @@ type addrAssignments struct {
 	byMagicIP   map[netip.Addr]addrs
 	byTransitIP map[netip.Addr]addrs
 	byDomainDst map[domainDst]addrs
+	byExpiresAt addrsHeap
 	clock       tstime.Clock
 }
 
@@ -64,6 +66,7 @@ func (a *addrAssignments) insertWithExpiry(as addrs, d time.Duration) error {
 	mak.Set(&a.byMagicIP, as.magic, as)
 	mak.Set(&a.byTransitIP, as.transit, as)
 	mak.Set(&a.byDomainDst, ddst, as)
+	heap.Push(&a.byExpiresAt, as)
 	return nil
 }
 
@@ -89,4 +92,38 @@ func (a *addrAssignments) lookupByTransitIP(tip netip.Addr) (addrs, bool) {
 		return addrs{}, false
 	}
 	return v, true
+}
+
+// popExpired returns the member of addrAssignments that expired earliest,
+// or an invalid addrs if there are no expired members of addrAssignments.
+func (a *addrAssignments) popExpired() addrs {
+	if a.byExpiresAt.Len() == 0 {
+		return addrs{}
+	}
+	if !a.byExpiresAt.peek().expiresAt.Before(a.clock.Now()) {
+		return addrs{}
+	}
+	v := heap.Pop(&a.byExpiresAt).(addrs)
+	delete(a.byMagicIP, v.magic)
+	delete(a.byTransitIP, v.transit)
+	dd := domainDst{domain: v.domain, dst: v.dst}
+	delete(a.byDomainDst, dd)
+	return v
+}
+
+type addrsHeap []addrs
+
+func (h addrsHeap) Len() int           { return len(h) }
+func (h addrsHeap) Less(i, j int) bool { return h[i].expiresAt.Before(h[j].expiresAt) }
+func (h addrsHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *addrsHeap) Push(x any)        { *h = append(*h, x.(addrs)) }
+func (h *addrsHeap) Pop() any {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+func (h *addrsHeap) peek() addrs {
+	return (*h)[0]
 }

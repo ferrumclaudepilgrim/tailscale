@@ -729,6 +729,25 @@ func (c *client) reserveAddresses(app string, domain dnsname.FQDN, dst netip.Add
 		return existing, nil
 	}
 
+	// Before we check out more addresses from the pools try to return some.
+	// Trying to return any number greater than 1 will cause the number of
+	// addresses used to trend down in general. But as we have 2 different
+	// pools for the different IP versions, use a number a bit higher than
+	// 2 to try and process bursty behavior faster.
+	for range 10 {
+		a := c.assignments.popExpired()
+		if !a.isValid() {
+			break
+		}
+		if a.is4() {
+			c.v4MagicIPPool.returnAddr(a.magic)
+			c.v4TransitIPPool.returnAddr(a.transit)
+		} else if a.is6() {
+			c.v6MagicIPPool.returnAddr(a.magic)
+			c.v6TransitIPPool.returnAddr(a.transit)
+		}
+	}
+
 	var mip, tip netip.Addr
 	var err error
 	if dst.Is4() {
@@ -1180,6 +1199,14 @@ type addrs struct {
 
 func (c addrs) isValid() bool {
 	return c.dst.IsValid()
+}
+
+func (as addrs) is4() bool {
+	return as.dst.Is4()
+}
+
+func (as addrs) is6() bool {
+	return as.dst.Is6()
 }
 
 // insertTransitConnMapping adds an entry to the byConnKey map
